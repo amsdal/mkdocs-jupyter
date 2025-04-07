@@ -4,7 +4,7 @@ import pytest
 from mkdocs.config import load_config
 from mkdocs.structure.toc import AnchorLink, TableOfContents
 
-from mkdocs_jupyter import plugin
+from mkdocs_jupyter2 import plugin
 
 
 @pytest.mark.parametrize(

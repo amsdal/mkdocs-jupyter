@@ -54,6 +54,7 @@ class Plugin(mkdocs.plugins.BasePlugin):
         ("toc_depth", config_options.Type(int, default=6)),
         ("data_files", config_options.Type(dict, default={})),
         ("custom_mathjax_url", config_options.Type(str, default="")),
+        ("exclude_metadata", config_options.Type(bool, default=False)),
     )
     _supported_extensions = [".ipynb", ".py", ".md"]
 
@@ -108,6 +109,7 @@ class Plugin(mkdocs.plugins.BasePlugin):
             include_requirejs = self.config["include_requirejs"]
             toc_depth = self.config["toc_depth"]
             custom_mathjax_url = self.config["custom_mathjax_url"]
+            exclude_metadata = self.config["exclude_metadata"]
 
             if self.config["execute_ignore"] and len(self.config["execute_ignore"]) > 0:
                 for ignore_pattern in self.config["execute_ignore"]:
@@ -132,6 +134,7 @@ class Plugin(mkdocs.plugins.BasePlugin):
                     highlight_extra_classes=highlight_extra_classes,
                     include_requirejs=include_requirejs,
                     custom_mathjax_url=custom_mathjax_url,
+                    exclude_metadata=exclude_metadata,
                 )
                 self.content = body
                 toc, title = get_nb_toc(page.file.abs_src_path, toc_depth)
@@ -145,6 +148,7 @@ class Plugin(mkdocs.plugins.BasePlugin):
             # Add metadata for template
             self._set_nb_url(page)
             page.data_files = self.config["data_files"].get(page.file.src_path)
+
         return page
 
     def _set_nb_url(self, page):

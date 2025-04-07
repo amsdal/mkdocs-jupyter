@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
+from typing import Any
 
 import jupytext
 import mistune
@@ -18,13 +20,18 @@ from nbconvert.exporters.templateexporter import default_filters
 from nbconvert.filters.highlight import _pygments_highlight
 from nbconvert.filters.markdown_mistune import IPythonRenderer, MarkdownWithMath
 from nbconvert.nbconvertapp import NbConvertApp
+from nbconvert.preprocessors import (
+    ExecutePreprocessor,
+    TagRemovePreprocessor,
+    ClearMetadataPreprocessor,
+)
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
-from mkdocs_jupyter.config import settings
-from mkdocs_jupyter.preprocessors import SubCell
+from mkdocs_jupyter2.config import settings
+from mkdocs_jupyter2.preprocessors import SubCell
 
 logger = logging.getLogger("mkdocs.mkdocs-jupyter")
 
@@ -33,6 +40,126 @@ kernel_lang = "python"
 
 # We use this to tag each div with code with an unique ID for the copy-to-clipboard
 cell_id = 0
+
+
+@dataclass
+class Config:
+    css_html_header_preprocessor: dict[str, Any]
+    template_exported: dict[str, Any]
+    sub_cell: dict[str, Any] | None = None
+    tag_remove_preprocessor: dict[str, Any] | None = None
+    execute_preprocessor: dict[str, Any] | None = None
+
+    @property
+    def is_execute_enabled(self) -> bool:
+        return self.execute_preprocessor is not None and self.execute_preprocessor.get(
+            "enabled"
+        )
+
+    @property
+    def is_remove_output_enabled(self) -> bool:
+        if self.tag_remove_preprocessor is None or not self.tag_remove_preprocessor.get(
+            "enabled"
+        ):
+            return False
+
+        return any(
+            [
+                "remove_all_outputs_tags" in self.tag_remove_preprocessor,
+                "remove_single_output_tags" in self.tag_remove_preprocessor,
+            ],
+        )
+
+    def to_nbconvert_config(self, exclude: set | None = None) -> dict[str, Any]:
+        exclude = exclude or set()
+        _config = {
+            "CSSHTMLHeaderPreprocessor": self.css_html_header_preprocessor,
+            "SubCell": self.sub_cell,
+            "TemplateExporter": self.template_exported,
+            "TagRemovePreprocessor": self.tag_remove_preprocessor,
+            "ExecutePreprocessor": self.execute_preprocessor,
+        }
+
+        # remove keys with None values
+        return {
+            key: value
+            for key, value in _config.items()
+            if value is not None and key not in exclude
+        }
+
+
+def build_config(
+    execute=False,
+    execution_timeout: int = 600,
+    kernel_name="",
+    slice_cells: tuple[int, int | None] | None = None,
+    allow_errors=True,
+    show_input: bool = True,
+    no_input: bool = False,
+    remove_tag_config: dict | None = None,
+) -> Config:
+    """
+    Get the configuration for nbconvert
+    """
+    _config: dict[str, Any] = {
+        "template_exported": {
+            "exclude_input": not show_input,
+        }
+    }
+
+    if no_input:
+        _config.update(
+            {
+                "template_exported": {
+                    "exclude_output_prompt": True,
+                    "exclude_input": True,
+                    "exclude_input_prompt": True,
+                }
+            }
+        )
+
+    if remove_tag_config:
+        _config.update(
+            {
+                "tag_remove_preprocessor": {
+                    "enabled": True,
+                }
+            }
+        )
+        for conf_param, conf_value in remove_tag_config.items():
+            if conf_param in [
+                "remove_cell_tags",
+                "remove_all_outputs_tags",
+                "remove_single_output_tags",
+                "remove_input_tags",
+            ]:
+                _config["tag_remove_preprocessor"].update(
+                    {
+                        conf_param: {conf_value[0]},
+                    }
+                )
+
+    if slice_cells:
+        start, end = slice_cells
+        _config["sub_cell"] = {"enabled": True, "start": start, "end": end}
+
+    return Config(
+        **{
+            "css_html_header_preprocessor": {
+                "enabled": True,
+                "highlight_class": ".highlight-ipynb",
+            },
+
+            "execute_preprocessor": {
+                "enabled": execute,
+                "store_widget_state": True,
+                "kernel_name": kernel_name,
+                "allow_errors": allow_errors,
+                "timeout": execution_timeout,
+            },
+            **_config,
+        },
+    )
 
 
 def nb2html(
@@ -45,10 +172,12 @@ def nb2html(
     allow_errors=True,
     show_input: bool = True,
     no_input: bool = False,
-    remove_tag_config: dict = {},
+    remove_tag_config: dict | None = None,
     highlight_extra_classes: str = "",
     include_requirejs: bool = False,
     custom_mathjax_url: str = "https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML-full,Safe",
+    execution_timeout: int = 600,
+    exclude_metadata: bool = False,
 ):
     """
     Convert a notebook to HTML
@@ -73,22 +202,31 @@ def nb2html(
             Shows code input (default: True)
         no_input: bool
             Render notebook without code or output (default: False)
-        remove_tag_config: dict
-            Configure rendering based on cell tags (default: {})
+        remove_tag_config: dict | None
+            Configure rendering based on cell tags (default: None)
+        highlight_extra_classes: str
+            Extra CSS classes to add to the code cells
+        include_requirejs: bool
+            Include requirejs in the output
+        custom_mathjax_url: str
+            Custom URL for MathJax
+        execution_timeout: int
+            Timeout for cell execution
     Returns
     -------
         HTML content
     """
-    logger.info(f"Converting notebook (execute={execute}): {nb_path}")
+    logger.info(f"Converting notebook to HTML (execute={execute}): {nb_path}")
 
     global cell_id, kernel_lang
     cell_id = 0  # Reset the cell id
+    slice_cells = (start, end) if start or end else None
 
-    app = get_nbconvert_app(
+    _config: Config = build_config(
         execute=execute,
+        execution_timeout=execution_timeout,
         kernel_name=kernel_name,
-        start=start,
-        end=end,
+        slice_cells=slice_cells,
         allow_errors=allow_errors,
         show_input=show_input,
         no_input=no_input,
@@ -100,7 +238,31 @@ def nb2html(
     extra_template_paths = [settings.templates_dir]
 
     # Customize NBConvert App
-    preprocessors_ = [SubCell]
+    preprocessors_ = []
+
+    if _config.sub_cell:
+        preprocessors_ += [SubCell(**_config.sub_cell)]
+
+    if _config.is_execute_enabled:
+        execute_preprocessor = ExecutePreprocessor(
+            **_config.execute_preprocessor,
+        )
+        preprocessors_ += [execute_preprocessor]
+
+    if _config.is_remove_output_enabled:
+        tag_remove_preprocessor = TagRemovePreprocessor(
+            **_config.tag_remove_preprocessor,
+        )
+        preprocessors_ += [tag_remove_preprocessor]
+
+    if exclude_metadata:
+        preprocessors_ += [ClearMetadataPreprocessor()]
+
+    app = get_nbconvert_app(
+        nbconvert_config=_config.to_nbconvert_config(
+            exclude={"ExecutePreprocessor", "TagRemovePreprocessor"}
+        ),
+    )
     filters = {
         "highlight_code": mk_custom_highlight_code(
             extra_css_classes=highlight_extra_classes
@@ -179,9 +341,17 @@ def nb2md(nb_path, start=0, end=None, execute=False, kernel_name=""):
     We use a template that removed all code cells because if the body
     is to big ( with javascript and CSS) it takes to long to read and parse
     """
-
+    logger.info(f"Converting notebook to MD (execute={execute}): {nb_path}")
+    slice_cells = (start, end) if start or end else None
+    _config: Config = build_config(
+        slice_cells=slice_cells,
+        execute=execute,
+        kernel_name=kernel_name,
+    )
     app = get_nbconvert_app(
-        start=start, end=end, execute=execute, kernel_name=kernel_name
+        nbconvert_config=_config.to_nbconvert_config(
+            exclude={"ExecutePreprocessor", "TagRemovePreprocessor"}
+        ),
     )
 
     # Use the templates included in this package
@@ -209,78 +379,13 @@ def nb2md(nb_path, start=0, end=None, execute=False, kernel_name=""):
     return re.sub(backquote_text_regex, "", body)
 
 
-def get_nbconvert_app(
-    execute=False,
-    kernel_name="",
-    start=0,
-    end=None,
-    allow_errors=True,
-    show_input: bool = True,
-    no_input: bool = False,
-    remove_tag_config: dict = {},
-) -> NbConvertApp:
+def get_nbconvert_app(nbconvert_config: dict[str, Any]) -> NbConvertApp:
     """Create"""
 
     # Load the user's nbconvert configuration
     app = NbConvertApp()
     app.load_config_file()
-
-    template_exported_conf = {
-        "TemplateExporter": {
-            "exclude_input": not show_input,
-        }
-    }
-
-    if no_input:
-        template_exported_conf.update(
-            {
-                "TemplateExporter": {
-                    "exclude_output_prompt": True,
-                    "exclude_input": True,
-                    "exclude_input_prompt": True,
-                }
-            }
-        )
-
-    if remove_tag_config != {}:
-        template_exported_conf.update(
-            {
-                "TagRemovePreprocessor": {
-                    "enabled": True,
-                }
-            }
-        )
-        for conf_param, conf_value in remove_tag_config.items():
-            if conf_param in [
-                "remove_cell_tags",
-                "remove_all_outputs_tags",
-                "remove_single_output_tags",
-                "remove_input_tags",
-            ]:
-                template_exported_conf["TagRemovePreprocessor"].update(
-                    {
-                        conf_param: {conf_value[0]},
-                    }
-                )
-
-    app.config.update(
-        {
-            # This Preprocessor changes the pygments css prefixes
-            # from .highlight to .highlight-ipynb
-            "CSSHTMLHeaderPreprocessor": {
-                "enabled": True,
-                "highlight_class": ".highlight-ipynb",
-            },
-            "SubCell": {"enabled": True, "start": start, "end": end},
-            "ExecutePreprocessor": {
-                "enabled": execute,
-                "store_widget_state": True,
-                "kernel_name": kernel_name,
-                "allow_errors": allow_errors,
-            },
-            **template_exported_conf,
-        }
-    )
+    app.config.update(nbconvert_config)
 
     return app
 
