@@ -2,16 +2,16 @@ import os
 
 import pytest
 
-import mkdocs_jupyter
-from mkdocs_jupyter.config import settings
+import mkdocs_jupyter2
+from mkdocs_jupyter2.config import settings
 
 pytestmark = [pytest.mark.pkg]
 
 
 def test_import():
-    assert mkdocs_jupyter.__version__ is not None
-    assert mkdocs_jupyter.__version__ != "0.0.0"
-    assert len(mkdocs_jupyter.__version__) > 0
+    assert mkdocs_jupyter2.__version__ is not None
+    assert mkdocs_jupyter2.__version__ != "0.0.0"
+    assert len(mkdocs_jupyter2.__version__) > 0
 
 
 def test_assets_included():

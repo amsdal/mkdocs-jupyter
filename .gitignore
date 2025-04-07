@@ -117,3 +117,6 @@ _generated_version.py
 .venv
 node_modules
 mkdocs_jupyter/tests/mkdocs/site
+
+.vscode/
+.idea/
